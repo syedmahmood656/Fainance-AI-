@@ -1,0 +1,96 @@
+# RECEIPT IMAGE STORAGE & RETRIEVAL
+
+Add a simple receipt-image storage and retrieval capability.
+
+Whenever a user uploads a receipt image:
+
+1. Store the original receipt image in persistent object/file storage.
+2. Associate the image with the corresponding expense record in PostgreSQL.
+3. Store a reference to the image in the database rather than storing the binary image directly in PostgreSQL.
+4. Preserve the relationship:
+
+Expense → Receipt Image
+
+Each expense should therefore be able to retrieve its original receipt image.
+
+## IMAGE RETRIEVAL
+
+The user should be able to ask naturally for receipt images.
+
+Examples:
+
+"Show me the receipt for the Starbucks expense."
+
+"Show me the receipt for ₹2,450."
+
+"Show me the receipts from September."
+
+"Show me all Travel receipts from this month."
+
+"Show me the receipt for the 17 September hotel expense."
+
+The system should:
+
+1. Understand the user's request.
+2. Query PostgreSQL to identify the matching expense(s).
+3. Retrieve the associated stored receipt image(s).
+4. Send the image(s) back to the user through Telegram.
+
+For multiple matching receipts, send them as individual Telegram images or as a Telegram media group where appropriate.
+
+## IMAGE STORAGE
+
+For the MVP, use a simple persistent storage solution such as:
+
+* local persistent storage when running locally, or
+* S3-compatible object storage for deployment.
+
+Keep the storage implementation behind a simple interface so the storage provider can be changed later without modifying the expense logic.
+
+Example database fields:
+
+receipt_file_reference
+receipt_filename
+receipt_mime_type
+receipt_uploaded_at
+
+Do not store the image binary directly in PostgreSQL.
+
+## IMAGE-EXPENSE LINKING
+
+Every uploaded receipt must be linked to its expense record.
+
+Conceptually:
+
+Expense:
+id
+vendor
+amount
+date
+category
+receipt_file_reference
+
+This allows the application to retrieve the original receipt whenever the user asks for it.
+
+## IMPORTANT
+
+The LLM should NOT store or retrieve images itself.
+
+The LLM should understand the user's request and identify the relevant expense.
+
+The backend/database/storage layer should perform the actual image retrieval.
+
+Use the existing LangGraph workflow to route requests such as:
+
+"Show me the receipt for..."
+
+into:
+
+User request
+→ identify expense/filter
+→ query PostgreSQL
+→ retrieve image reference
+→ retrieve image from storage
+→ send image through Telegram
+
+Do not introduce a vector database or RAG system just for receipt-image retrieval. Structured database queries are sufficient for this feature.

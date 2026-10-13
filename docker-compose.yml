@@ -1,0 +1,38 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env            # all secrets live here - never hard-code keys in this file
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/expense_db
+      RECEIPTS_DIR: /app/receipts
+      REPORTS_TMP_DIR: /app/reports_tmp
+    volumes:
+      - receipts_data:/app/receipts   # receipt images survive rebuilds/restarts
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: expense_db
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d expense_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  receipts_data:

@@ -1,0 +1,8 @@
+.git
+.env
+__pycache__
+*.pyc
+receipts
+reports_tmp
+app.log
+.pytest_cache
