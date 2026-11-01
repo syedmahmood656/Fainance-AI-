@@ -89,6 +89,7 @@ class ExpenseCategorizer:
 
 def _parser_system(today: date) -> str:
     cats = ", ".join(c.value for c in ALL_CATEGORIES)
+    example_cat = ALL_CATEGORIES[2].value  # any real category: keeps the few-shot example valid after category edits
     return f"""You convert a user's message about their expenses into a JSON request. Today is {today.isoformat()}.
 Reply with ONE JSON object and nothing else. Never calculate totals or dates yourself.
 
@@ -107,6 +108,7 @@ chart_type (only for intent chart, else null): category_bar, category_pie, top_c
 (timeline = line graph of expenses over time / expense vs time / daily or weekly spending)
 
 period.kind: this_month, last_month, this_year, last_year, month (set month 1-12, and year only if said), year (set year), last_n_months (set months), all
+(use "all" whenever the user names NO time period, e.g. "expenses of every category")
 category: one of [{cats}] or null (only when the user names a category)
 search_text: vendor/item words for receipt_lookup (e.g. "restaurant", "hotel"), else null
 amount: exact amount for receipt_lookup, plain number, else null
@@ -119,7 +121,7 @@ Template:
 
 Examples:
 "expenses by category for September" -> {{"intent": "category_breakdown", "chart_type": null, "period": {{"kind": "month", "month": 9}}, "category": null, "search_text": null, "amount": null, "top_n": null}}
-"Excel report for Travel in September" -> {{"intent": "excel_report", "chart_type": null, "period": {{"kind": "month", "month": 9}}, "category": "Travel", "search_text": null, "amount": null, "top_n": null}}
+"Excel report for {example_cat} in September" -> {{"intent": "excel_report", "chart_type": null, "period": {{"kind": "month", "month": 9}}, "category": "{example_cat}", "search_text": null, "amount": null, "top_n": null}}
 "graph of daily expenses this month" -> {{"intent": "chart", "chart_type": "timeline", "period": {{"kind": "this_month"}}, "category": null, "search_text": null, "amount": null, "top_n": null, "granularity": "day", "cumulative": false}}
 "show the receipt for the 2,450 restaurant expense" -> {{"intent": "receipt_lookup", "chart_type": null, "period": {{"kind": "all"}}, "category": null, "search_text": "restaurant", "amount": 2450, "top_n": null}}"""
 

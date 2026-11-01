@@ -107,7 +107,7 @@ class CategorizationResult(BaseModel):
 # 2. Report request (LLM interprets, Python executes)
 # ---------------------------------------------------------------------------
 class Period(BaseModel):
-    kind: PeriodKind = PeriodKind.THIS_MONTH
+    kind: PeriodKind = PeriodKind.ALL
     year: Optional[int] = Field(None, ge=2000, le=2100)
     month: Optional[int] = Field(None, ge=1, le=12)
     months: Optional[int] = Field(None, ge=1, le=36)
@@ -120,8 +120,7 @@ class Period(BaseModel):
         try:
             return PeriodKind(str(v).strip().lower())
         except ValueError:
-            return PeriodKind.THIS_MONTH
-
+                return PeriodKind.ALL
     @field_validator("year", "month", "months", mode="before")
     @classmethod
     def _ints(cls, v):

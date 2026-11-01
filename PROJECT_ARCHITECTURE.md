@@ -21,7 +21,7 @@
 ## 1.1 Purpose
 Small organizations collect paper/phone receipts and need structured, auditable expense data without manual entry. **Ledger Finance AI** is a Telegram bot that:
 
-1. Accepts a **receipt photo**, reads it with a vision-capable LLM, and categorizes it into one of 12 predefined categories.
+1. Accepts a **receipt photo**, reads it with a vision-capable LLM, and categorizes it into one of the organization's predefined categories (defined in `app/schemas/enums.py`).
 2. Puts a **human in the loop**: the user must *Confirm* or *Correct* the AI's result before it counts. AI values and human values are stored side by side, producing an evaluation dataset as a by-product.
 3. Answers **natural-language report requests** (totals, category breakdowns, monthly trends, charts, Excel workbooks) and **retrieves original receipt images** — with all numbers computed by SQL/Python, never by the LLM.
 
@@ -117,7 +117,10 @@ Ledger-Finance-AI/
 │   └── prompt.txt                 # (legacy notes, untouched)
 ├── scripts/
 │   ├── __init__.py
-│   └── export_eval_dataset.py     # feedback → JSONL / LangSmith dataset / accuracy stats
+│   ├── export_eval_dataset.py     # live feedback → N, X%, Y%, CIs, JSONL, LangSmith dataset
+│   ├── eval_receipts.py           # accuracy on hand-labelled receipts (ground-truth CSV)
+│   ├── check_llm.py               # per-model health check
+│   └── remap_categories.py        # re-label old category names after a category change
 ├── app/
 │   ├── main.py                    # FastAPI app, lifespan, webhook endpoint
 │   ├── config/
@@ -132,6 +135,7 @@ Ledger-Finance-AI/
 │   ├── services/
 │   │   ├── expense_service.py     # pending→confirm lifecycle, corrections, CSV import
 │   │   ├── feedback.py            # pure AI-vs-human diff + snapshot
+│   │   ├── evaluation.py          # pure scoring + Wilson confidence intervals
 │   │   ├── validation.py          # pure sanitize + confirmation-card warnings
 │   │   └── storage_service.py     # StorageProvider ABC + local-disk implementation
 │   ├── ai/
@@ -143,6 +147,7 @@ Ledger-Finance-AI/
 │   │   ├── state.py               # AgentState TypedDict
 │   │   ├── graph.py               # LangGraph nodes, routers, compile, run_agent
 │   │   ├── feedback_flow.py       # confirm/correct/discard state machine + keyboards
+│   │   ├── manual_flow.py         # /add wizard state machine (amount → category → description)
 │   │   └── reporting_flow.py      # ReportRequest → tool calls; tool results → reply
 │   ├── mcp_server/
 │   │   ├── server.py              # FastMCP server exposing 10 tools
@@ -158,6 +163,7 @@ Ledger-Finance-AI/
 │   └── utils/
 │       ├── logging.py             # stderr logging config
 │       ├── tracing.py             # optional LangSmith integration + scrubbing
+│       ├── clock.py               # utcnow() without the deprecated datetime.utcnow()
 │       ├── formatting.py          # money/date formatting, confirmation card
 │       └── parsing.py             # forgiving amount/date/currency/correction parsers
 └── tests/
@@ -230,7 +236,7 @@ Conventions: `async` marks coroutines. "Pure" = no I/O, deterministic, no hidden
 
 | Symbol | Description |
 |---|---|
-| `ExpenseCategory` (`str, Enum`) | The 12 categories: Travel, Food & Meals, Accommodation, Transportation, Office Supplies, Utilities, Software & Subscriptions, Equipment, Marketing, Communication, Professional Services, Miscellaneous. |
+| `ExpenseCategory` (`str, Enum`) | The organization's categories (currently 13: printing and stationary, conveyance, travelling expenses, mobile recharge, internet, books and library, guest hospitality, summer islamic camp, islamic vocational classes, infaq, zakath, zonal share, Miscellaneous). **Edit this enum + `CATEGORY_DESCRIPTIONS` to change them; nothing else is hard-coded.** |
 | `CATEGORY_DESCRIPTIONS` | Per-category hint text injected into the categorization prompt. |
 | `ALL_CATEGORIES` | Ordered list; **index order is the contract** for the `cc:<id>:<idx>` Telegram callback. |
 | `normalize_category(value) -> ExpenseCategory \| None` | Case/`&`/alias-tolerant mapping (e.g. "Conveyance" → Transportation); `None` if unmatchable (never guesses). |
@@ -289,6 +295,12 @@ Conventions: `async` marks coroutines. "Pure" = no I/O, deterministic, no hidden
 | `list_confirmed_for_eval` | `(since=None)` | Confirmed `source='receipt'` rows for the dataset export. |
 
 **Data flow:** callers build an `ExpenseFilter` → repository adds the mandatory `confirmed` predicate → SQL aggregation → plain `dict`/ORM rows (floats rounded to 2 dp by `_num`).
+
+### Additions after the first release
+- **`agent/manual_flow.py`** — `handle_manual(user_id, event, svc=None) -> dict`: the `/add` wizard (`start` → amount → category buttons `ma:<idx>` or typed name → description/`skip`). Progress is stored in the `manual_drafts` table (one row per user, TTL = `PENDING_EDIT_TTL_MINUTES`); starting a field edit or `/cancel` closes it. Saved via `ExpenseService.finish_manual` → `create_manual_expense` (status `confirmed`, `source='manual'`, excluded from AI-accuracy statistics).
+- **Duplicate detection** — the SHA-256 of each uploaded image is stored in `expenses.receipt_hash`; `create_pending_receipt` looks for an earlier pending/confirmed expense with the same hash and records it in `extraction_meta["duplicate_of"]`, which `card_warnings` shows. It warns, never blocks. (Re-compressed copies of the same receipt have different bytes and are not caught.)
+- **`services/evaluation.py`** — `wilson_interval`, `proportion`, `vendor_matches` (forgiving fuzzy match), `score_receipt`, `summarize`, `live_summary`, `resume_line`.
+- **`utils/clock.py`** — `utcnow()`.
 
 ### `app/database/session.py`
 Re-exports `SessionLocal`; `get_db()` is a FastAPI-style generator dependency (kept for API routes; the agent uses `with SessionLocal() as s:`).
@@ -546,7 +558,7 @@ expenses (1) ───< expense_corrections (N)       expenses (1) ───< pe
 ### `expenses`
 | Group | Columns | Notes |
 |---|---|---|
-| Identity | `id` PK, `telegram_user_id` **BIGINT** (IDs exceed 32 bits), `status`, `source` | `status ∈ pending/confirmed/discarded/expired`; `source ∈ receipt/csv`. Server defaults make legacy rows `confirmed`/`receipt`. |
+| Identity | `id` PK, `telegram_user_id` **BIGINT** (IDs exceed 32 bits), `status`, `source` | `status ∈ pending/confirmed/discarded/expired`; `source ∈ receipt/csv/manual`. `receipt_hash` = SHA-256 of the uploaded image. Server defaults make legacy rows `confirmed`/`receipt`. |
 | **Final values** (used by all reports) | `vendor`, `invoice_number`, `expense_date` **DATE**, `item`, `goods_or_service`, `category`, `expense_amount` **NUMERIC(14,2)**, `currency`, `subtotal`, `tax`, `description`, `receipt_file_reference` | Nullable so a pending row may have unknown values; required-at-confirm enforced in service code. |
 | **AI values** (immutable after creation) | `vendor_ai`, `expense_date_ai`, `category_ai`, `item_ai`, `goods_or_service_ai`, `expense_amount_ai`, `ai_extraction` JSON | `ai_extraction` = `{"extraction": {...}, "categorization": {...}}`. |
 | Snapshots/meta | `final_result` JSON (at confirmation), `extraction_meta` JSON (warnings, assumed fields, provider/model/latency, failure flags) | |
@@ -556,6 +568,9 @@ expenses (1) ───< expense_corrections (N)       expenses (1) ───< pe
 
 ### `expense_corrections` (the evaluation dataset)
 `id`, `expense_id` FK (ON DELETE CASCADE), `telegram_user_id`, `field`, `ai_value`, `final_value`, `created_at`. Written **only at confirmation**, derived from the diff, so edit-then-revert produces no noise.
+
+### `manual_drafts` (conversation state for `/add`)
+`telegram_user_id` PK, `step` (amount/category/description), `amount`, `category`, `created_at`.
 
 ### `pending_edits` (conversation state)
 `telegram_user_id` **PK** (one outstanding prompt per user), `expense_id` FK, `field`, `created_at`. Expires after `PENDING_EDIT_TTL_MINUTES`.

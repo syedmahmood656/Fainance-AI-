@@ -21,24 +21,26 @@ _MONTHS = {
 _NUMBER_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
                  "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12}
 
+_C = ExpenseCategory
+# single words a user might say -> category (full category names are matched separately, first)
 _CATEGORY_WORDS = {
-    "travel": ExpenseCategory.TRAVEL,
-    "food": ExpenseCategory.FOOD_MEALS,
-    "meals": ExpenseCategory.FOOD_MEALS,
-    "accommodation": ExpenseCategory.ACCOMMODATION,
-    "transportation": ExpenseCategory.TRANSPORTATION,
-    "transport": ExpenseCategory.TRANSPORTATION,
-    "utilities": ExpenseCategory.UTILITIES,
-    "equipment": ExpenseCategory.EQUIPMENT,
-    "marketing": ExpenseCategory.MARKETING,
-    "communication": ExpenseCategory.COMMUNICATION,
-    "software": ExpenseCategory.SOFTWARE_SUBSCRIPTIONS,
-    "subscriptions": ExpenseCategory.SOFTWARE_SUBSCRIPTIONS,
-    "stationery": ExpenseCategory.OFFICE_SUPPLIES,
-    "supplies": ExpenseCategory.OFFICE_SUPPLIES,
-    "professional": ExpenseCategory.PROFESSIONAL_SERVICES,
-    "miscellaneous": ExpenseCategory.MISCELLANEOUS,
+    "printing": _C.PRINTING_STATIONARY, "stationary": _C.PRINTING_STATIONARY, "stationery": _C.PRINTING_STATIONARY,
+    "xerox": _C.PRINTING_STATIONARY,
+    "conveyance": _C.CONVEYANCE, "taxi": _C.CONVEYANCE, "cab": _C.CONVEYANCE, "fuel": _C.CONVEYANCE,
+    "transport": _C.CONVEYANCE, "transportation": _C.CONVEYANCE,
+    "travel": _C.TRAVELLING_EXPENSES, "travelling": _C.TRAVELLING_EXPENSES, "traveling": _C.TRAVELLING_EXPENSES,
+    "recharge": _C.MOBILE_RECHARGE,
+    "internet": _C.INTERNET, "wifi": _C.INTERNET, "broadband": _C.INTERNET,
+    "books": _C.BOOKS_LIBRARY, "library": _C.BOOKS_LIBRARY,
+    "hospitality": _C.GUEST_HOSPITALITY, "guest": _C.GUEST_HOSPITALITY, "guests": _C.GUEST_HOSPITALITY,
+    "camp": _C.SUMMER_ISLAMIC_CAMP,
+    "vocational": _C.ISLAMIC_VOCATIONAL_CLASSES,
+    "infaq": _C.INFAQ, "infak": _C.INFAQ,
+    "zakath": _C.ZAKATH, "zakat": _C.ZAKATH, "zakah": _C.ZAKATH,
+    "zonal": _C.ZONAL_SHARE,
+    "miscellaneous": _C.MISCELLANEOUS,
 }
+del _C
 
 
 def _has(text: str, *words: str) -> bool:
@@ -108,7 +110,7 @@ def _find_amount(text: str) -> Optional[float]:
 
 def rule_based_request(text: str, today: Optional[date] = None) -> Dict[str, Any]:
     t = " ".join((text or "").lower().split())
-    result: Dict[str, Any] = {"intent": "unknown", "period": {"kind": "this_month"}}
+    result: Dict[str, Any] = {"intent": "unknown", "period": {"kind": "all"}}   # no period named -> all time
     if not t:
         return result
 
@@ -121,7 +123,8 @@ def rule_based_request(text: str, today: Optional[date] = None) -> Dict[str, Any
     wants_timeline = _has(t, "timeline", "time series", "daily", "weekly", "day by day", "day-wise", "daywise",
                           "cumulative", "running total") or bool(
         re.search(r"\bover\s+time\b|\b(vs|versus|against)\s+(time|date|days)\b|\bx\s+(time|timeline)\b", t))
-    trend_words = _has(t, "trend", "monthly", "month by month", "month-wise", "monthwise") or _find_last_n_months(t)
+    trend_words = _has(t, "trend", "monthly", "month by month", "month-wise", "monthwise", "by month", "per month",
+                       "each month") or _find_last_n_months(t)
 
     if asks_receipt and asks_show and not wants_excel:
         result["intent"] = "receipt_lookup"

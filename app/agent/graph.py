@@ -9,6 +9,7 @@ START ──route──┬─ receipt  → extract → validate → categorize �
 
 Routing is deterministic. The LLM is only used inside extract, categorize and parse_report.
 """
+import hashlib
 import time
 from datetime import date
 from typing import Any, Dict
@@ -16,6 +17,7 @@ from typing import Any, Dict
 from langgraph.graph import END, START, StateGraph
 
 from app.agent.feedback_flow import handle_feedback, render_card
+from app.agent.manual_flow import handle_manual
 from app.agent.reporting_flow import build_reply, plan_tool_calls
 from app.agent.state import AgentState
 from app.ai.llm_provider import LLMUnavailableError
@@ -47,6 +49,7 @@ HELP_TEXT = (
     "📈 \"Show me a bar graph of this month's expenses\" · \"Last 6 months of expenses\"\n"
     "📁 \"Download the September Excel report\"\n"
     "🧾 \"Show me the receipt for the ₹2,450 restaurant expense\" · \"Show me Travel receipts\"\n"
+    "✍️ /add — add an expense without a receipt (amount → category → description)\n"
     "📤 Send a CSV (date, vendor, amount, currency, category, description) to import expenses."
 )
 
@@ -67,9 +70,13 @@ def route_input(state: AgentState) -> str:
         return "process_csv"
     if kind == "feedback":
         return "handle_feedback"
-    # Plain text: if we are waiting for a typed correction, it is feedback, not a report request.
+    if kind == "manual_add":
+        return "manual_add"
+    # Plain text: if we are waiting for a typed answer, it is NOT a report request.
     if expense_service.get_edit(state["user_id"]):
         return "text_feedback"
+    if expense_service.get_manual(state["user_id"]):
+        return "manual_add"
     return "parse_report"
 
 
@@ -97,10 +104,12 @@ async def extract_receipt_node(state: AgentState) -> Dict[str, Any]:
     if not image:
         return {"error": "I couldn't read the uploaded image. Please send it again."}
     started = time.perf_counter()
+    image_hash = hashlib.sha256(image).hexdigest()   # byte-identical re-uploads are flagged as duplicates
     try:
         extraction, info = await extractor.extract(image)
         set_trace_metadata(extraction_success=True, latency_ms=int((time.perf_counter() - started) * 1000))
-        return {"extraction": extraction, "extraction_meta": {"extraction_llm": info.as_dict()}}
+        return {"extraction": extraction,
+                "extraction_meta": {"extraction_llm": info.as_dict(), "receipt_hash": image_hash}}
     except ValueError as exc:  # not an image Pillow can open
         logger.warning("Unreadable image: %s", exc)
         await storage_service.delete_file(ref)
@@ -110,7 +119,8 @@ async def extract_receipt_node(state: AgentState) -> Dict[str, Any]:
         logger.warning("Extraction failed, falling back to manual entry: %s", exc)
         set_trace_metadata(extraction_success=False, error=str(exc)[:150])
         return {"extraction": ReceiptExtraction(),
-                "extraction_meta": {"extraction_failed": True, "failure_reason": str(exc)}}
+                "extraction_meta": {"extraction_failed": True, "failure_reason": str(exc),
+                                    "receipt_hash": image_hash}}
 
 
 async def validate_receipt_node(state: AgentState) -> Dict[str, Any]:
@@ -146,6 +156,7 @@ async def save_pending_node(state: AgentState) -> Dict[str, Any]:
             categorization=state.get("categorization"),
             meta=state.get("extraction_meta") or {},
             langsmith_run_id=current_run_id(),
+            receipt_hash=(state.get("extraction_meta") or {}).get("receipt_hash"),
         )
     except Exception as exc:  # noqa: BLE001
         logger.error("Could not save pending expense: %s", exc, exc_info=True)
@@ -212,6 +223,12 @@ async def run_report_node(state: AgentState) -> Dict[str, Any]:
     reply = build_reply(calls, results)
     return {"response_text": reply["text"], "chart_paths": reply["chart_paths"],
             "excel_file_path": reply["excel_path"], "tool_calls": [name for name, _ in calls]}
+
+
+async def manual_add_node(state: AgentState) -> Dict[str, Any]:
+    """/add wizard (amount -> category -> description). Logic lives in agent/manual_flow.py."""
+    event = state.get("manual_event") or {"kind": "text", "text": state.get("message_text") or ""}
+    return handle_manual(state["user_id"], event)
 
 
 async def lookup_receipts_node(state: AgentState) -> Dict[str, Any]:
@@ -283,6 +300,7 @@ def create_graph():
     wf.add_node("run_report", run_report_node)
     wf.add_node("lookup_receipts", lookup_receipts_node)
     wf.add_node("help_reply", help_reply_node)
+    wf.add_node("manual_add", manual_add_node)
 
     wf.add_conditional_edges(START, route_input, {
         "extract_receipt": "extract_receipt",
@@ -290,6 +308,7 @@ def create_graph():
         "handle_feedback": "handle_feedback",
         "text_feedback": "text_feedback",
         "parse_report": "parse_report",
+        "manual_add": "manual_add",
     })
 
     wf.add_conditional_edges("extract_receipt", after_extract, {"validate_receipt": "validate_receipt", END: END})
@@ -300,6 +319,7 @@ def create_graph():
     wf.add_edge("handle_feedback", END)
     wf.add_edge("text_feedback", END)
     wf.add_edge("process_csv", END)
+    wf.add_edge("manual_add", END)
 
     wf.add_conditional_edges("parse_report", after_parse, {
         "lookup_receipts": "lookup_receipts", "help_reply": "help_reply", "run_report": "run_report", END: END,

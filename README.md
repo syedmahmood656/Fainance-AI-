@@ -65,9 +65,11 @@ Free-tier reality check: OpenRouter's free models are heavily rate-limited (on t
 | `Show me expenses over time` · `Daily expenses graph this month` · `Cumulative expense timeline last 3 months` · `Weekly expense graph for Travel in September` | **line graph of expense × time** (day/week/month buckets chosen automatically, or say daily/weekly/monthly; "cumulative" plots the running total) |
 | `Download the September Excel report` · `Excel report for Travel in September` | `.xlsx` (Summary, Expenses, Category Summary, Monthly Summary) |
 | `Show me the receipt for the ₹2,450 restaurant expense` · `Show me Travel receipts` | the stored receipt image(s) |
+| `/add` | add an expense **without a receipt**: amount → category buttons → description (saved as confirmed) |
+| `/cancel` | stop any "type the value" prompt or the `/add` wizard |
 | a `.csv` (date, vendor, amount, currency, category, description) | bulk import |
 
-**Correcting:** tap ✏️ Correct → choose a field. Category and Goods/Service use buttons; vendor, date, item and amount ask you to type the value (`cancel` to go back). Only **confirmed** expenses appear in reports, charts, Excel and receipt lookups; unconfirmed receipts expire after 24 h.
+**Correcting:** tap ✏️ Correct → choose a field. Category and Goods/Service use buttons; vendor, date, item and amount ask you to type the value (`cancel` to go back). The same image uploaded twice is flagged with a duplicate warning (you decide: Correct → Discard). Only **confirmed** expenses appear in reports, charts, Excel and receipt lookups; unconfirmed receipts expire after 24 h.
 
 ## Data model (PostgreSQL)
 
@@ -79,13 +81,31 @@ AI values are kept next to them and never overwritten: `category_ai`, `expense_a
 
 An existing `expenses` table is upgraded automatically on startup (`amount`→`expense_amount`, new columns added, legacy rows become `confirmed`). Back up your database before the first run anyway.
 
-## Feedback → evaluation (no automatic retraining)
+## Evaluation: measuring accuracy (no automatic retraining)
 
+Two ways to get the numbers for a sentence like *"N receipts, X% accepted without correction, Y% category accuracy"*:
+
+**A. From live usage** (every Confirm/Correct is already recorded):
 ```bash
-python -m scripts.export_eval_dataset --stats                       # accuracy per field, common category mistakes
-python -m scripts.export_eval_dataset --out eval/feedback.jsonl     # JSONL: AI output vs human-confirmed output
-python -m scripts.export_eval_dataset --out eval/f.jsonl --langsmith expense-feedback   # also create a LangSmith dataset
+python -m scripts.export_eval_dataset --stats --since 2026-10-24      # use your go-live date
+python -m scripts.export_eval_dataset --out eval/feedback.jsonl       # dataset: AI output vs human-confirmed output
+python -m scripts.export_eval_dataset --out eval/f.jsonl --langsmith expense-feedback
 ```
+Prints **N**, **X** (receipts accepted with zero corrections), **Y** (category kept), per-field accuracy, results per vision model, a stricter number that counts discarded receipts as failures, **95% confidence intervals**, and a ready-to-paste sentence.
+
+**B. From receipts you label yourself** (fast, no waiting; best for a CV claim):
+```bash
+python -m scripts.eval_receipts --images eval/receipts --init-truth eval/truth.csv   # creates the label sheet
+# fill eval/truth.csv from the PAPER receipts (blank cell = not scored), then:
+python -m scripts.eval_receipts --images eval/receipts --truth eval/truth.csv
+```
+Runs the same pipeline as the bot, scores each field against your labels, prints accuracy with confidence intervals and writes `eval/report.json`.
+
+Rules for an honest number: use real receipts (not samples); check each card against the paper before confirming; quote N and the interval; measure only receipts created after your last category change; prefer 50+ receipts.
+
+## Changing categories
+
+Edit **only** `app/schemas/enums.py`: the `ExpenseCategory` members, their `CATEGORY_DESCRIPTIONS` (this text is what the AI reads — be specific), and optionally `_CATEGORY_ALIASES` / `app/ai/report_rules.py::_CATEGORY_WORDS` for extra spellings. Prompts, buttons, validation and charts follow automatically; the test-suite derives its categories from this list. Rows saved under old names are re-labelled with `python -m scripts.remap_categories` (dry run first, then `--apply`).
 
 ## LangSmith (optional)
 
@@ -121,7 +141,7 @@ Tests use SQLite and a fake LLM — no network, no API keys. `USE_MCP=false` is 
 ```
 app/main.py                 FastAPI app, lifespan (DB init, webhook/polling)
 app/telegram/               bot.py (UI), polling.py
-app/agent/                  graph.py, state.py, feedback_flow.py, reporting_flow.py
+app/agent/                  graph.py, state.py, feedback_flow.py, manual_flow.py (/add), reporting_flow.py
 app/ai/                     llm_provider.py (multi-provider fallback), receipt_extractor.py, report_rules.py, llm_utils.py
 app/mcp_server/             server.py (FastMCP tools), client.py
 app/reporting/              tools.py, charts.py, excel.py, periods.py
@@ -129,6 +149,9 @@ app/services/               expense_service.py, storage_service.py, validation.p
 app/database/               models.py, repository.py
 app/schemas/                enums.py, expense.py (Pydantic)
 app/utils/                  tracing.py, logging.py, formatting.py, parsing.py
-scripts/export_eval_dataset.py
+scripts/export_eval_dataset.py   live accuracy stats / dataset export
+scripts/eval_receipts.py        accuracy on receipts you labelled
+scripts/check_llm.py            test every configured model one by one
+scripts/remap_categories.py     re-label rows after changing categories
 tests/
 ```

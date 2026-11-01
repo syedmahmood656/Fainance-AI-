@@ -75,6 +75,7 @@ def handle_feedback(user_id: int, fb: Dict[str, Any]) -> Dict[str, Any]:
 
     if action == "cancel_edit":
         expense_service.clear_edit(user_id)
+        expense_service.clear_manual(user_id)
         return {"response_text": "Okay, cancelled."}
 
     # ---- button presses (always tied to one expense) ----

@@ -40,8 +40,8 @@ class Settings(BaseSettings):
     # "openrouter/free" is OpenRouter's own router across currently-free models.
     OPENROUTER_TEXT_MODELS: str = ""
     OPENROUTER_VISION_MODELS: str = ""
-    GEMINI_TEXT_MODELS: str = "gemini-2.5-flash,gemini-2.5-flash-lite"
-    GEMINI_VISION_MODELS: str = "gemini-2.5-flash,gemini-2.5-flash-lite"
+    GEMINI_TEXT_MODELS: str = "gemini-3.5-flash-lite,gemini-3.8-flash"
+    GEMINI_VISION_MODELS: str = "gemini-3.5-flash-lite,gemini-3.8-flash"
     HF_TEXT_MODELS: str = "Qwen/Qwen2.5-72B-Instruct,meta-llama/Llama-3.3-70B-Instruct"
     HF_VISION_MODELS: str = "Qwen/Qwen2.5-VL-72B-Instruct"
 
@@ -54,7 +54,7 @@ class Settings(BaseSettings):
 
     # Token / size safety (fixes the "token limit" errors)
     LLM_MAX_OUTPUT_TOKENS: int = 1024
-    LLM_TIMEOUT_SECONDS: int = 60
+    LLM_TIMEOUT_SECONDS: int = 40
     LLM_MAX_MODEL_ATTEMPTS: int = 6  # total model attempts per call, across providers
     LLM_MAX_MODELS_PER_PROVIDER: int = 3  # so one provider can't use up every attempt
     LLM_MODEL_COOLDOWN_SECONDS: int = 300  # skip a model that just failed
@@ -74,6 +74,8 @@ class Settings(BaseSettings):
 
     # ---------------- Storage ----------------
     DATABASE_URL: str
+    DB_CONNECT_TIMEOUT_SECONDS: int = 5     # fail fast if the database host does not answer
+    DB_CONNECT_RETRIES: int = 10            # startup retries (e.g. docker still booting), 2 s apart
     RECEIPTS_DIR: str = "receipts"
     REPORTS_TMP_DIR: str = "reports_tmp"
     DEFAULT_CURRENCY: str = "INR"

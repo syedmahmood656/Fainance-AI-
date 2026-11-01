@@ -10,8 +10,9 @@ from typing import Dict, List, Optional, Tuple
 from sqlalchemy import extract, func, or_
 from sqlalchemy.orm import Session
 
-from app.database.models import Expense, ExpenseCorrection, PendingEdit
+from app.database.models import Expense, ExpenseCorrection, ManualDraft, PendingEdit
 from app.schemas.enums import ExpenseStatus
+from app.utils.clock import utcnow
 
 UNCATEGORIZED = "Uncategorized"
 
@@ -67,7 +68,7 @@ class ExpenseRepository:
             return None
         for key, value in fields.items():
             setattr(expense, key, value)
-        expense.updated_at = datetime.utcnow()
+        expense.updated_at = utcnow()
         self.session.commit()
         self.session.refresh(expense)
         return expense
@@ -76,7 +77,7 @@ class ExpenseRepository:
                 corrections: List[Tuple[str, Optional[str], Optional[str]]]) -> bool:
         """Atomically flip pending -> confirmed. Returns False if it was not pending
         (e.g. the user double-tapped Confirm), so nothing is written twice."""
-        now = datetime.utcnow()
+        now = utcnow()
         updated = (
             self.session.query(Expense)
             .filter(Expense.id == expense_id,
@@ -110,14 +111,14 @@ class ExpenseRepository:
             self.session.query(Expense)
             .filter(Expense.id == expense_id, Expense.telegram_user_id == user_id,
                     Expense.status == ExpenseStatus.PENDING.value)
-            .update({Expense.status: ExpenseStatus.DISCARDED.value, Expense.updated_at: datetime.utcnow()},
+            .update({Expense.status: ExpenseStatus.DISCARDED.value, Expense.updated_at: utcnow()},
                     synchronize_session=False)
         )
         self.session.commit()
         return updated == 1
 
     def expire_stale_pending(self, ttl_minutes: int) -> int:
-        cutoff = datetime.utcnow() - timedelta(minutes=ttl_minutes)
+        cutoff = utcnow() - timedelta(minutes=ttl_minutes)
         updated = (
             self.session.query(Expense)
             .filter(Expense.status == ExpenseStatus.PENDING.value, Expense.created_at < cutoff)
@@ -138,7 +139,7 @@ class ExpenseRepository:
         row = self.session.query(PendingEdit).filter(PendingEdit.telegram_user_id == user_id).first()
         if row is None:
             return None
-        if row.created_at and row.created_at < datetime.utcnow() - timedelta(minutes=ttl_minutes):
+        if row.created_at and row.created_at < utcnow() - timedelta(minutes=ttl_minutes):
             self.clear_pending_edit(user_id)
             return None
         return row
@@ -146,6 +147,45 @@ class ExpenseRepository:
     def clear_pending_edit(self, user_id: int) -> None:
         self.session.query(PendingEdit).filter(PendingEdit.telegram_user_id == user_id).delete()
         self.session.commit()
+
+    # ------------------------------------------------------------------
+    # /add wizard state
+    # ------------------------------------------------------------------
+    def start_manual(self, user_id: int) -> None:
+        self.session.query(ManualDraft).filter(ManualDraft.telegram_user_id == user_id).delete()
+        self.session.add(ManualDraft(telegram_user_id=user_id, step="amount"))
+        self.session.commit()
+
+    def get_manual(self, user_id: int, ttl_minutes: int) -> Optional[ManualDraft]:
+        row = self.session.query(ManualDraft).filter(ManualDraft.telegram_user_id == user_id).first()
+        if row is None:
+            return None
+        if row.created_at and row.created_at < utcnow() - timedelta(minutes=ttl_minutes):
+            self.clear_manual(user_id)
+            return None
+        return row
+
+    def update_manual(self, user_id: int, **fields) -> None:
+        self.session.query(ManualDraft).filter(ManualDraft.telegram_user_id == user_id).update(fields)
+        self.session.commit()
+
+    def clear_manual(self, user_id: int) -> None:
+        self.session.query(ManualDraft).filter(ManualDraft.telegram_user_id == user_id).delete()
+        self.session.commit()
+
+    # ------------------------------------------------------------------
+    # Duplicate detection
+    # ------------------------------------------------------------------
+    def find_duplicate_by_hash(self, receipt_hash: str, exclude_id: Optional[int] = None) -> Optional[Expense]:
+        """An earlier pending/confirmed expense created from the byte-identical image."""
+        if not receipt_hash:
+            return None
+        query = self.session.query(Expense).filter(
+            Expense.receipt_hash == receipt_hash,
+            Expense.status.in_([ExpenseStatus.PENDING.value, ExpenseStatus.CONFIRMED.value]))
+        if exclude_id is not None:
+            query = query.filter(Expense.id != exclude_id)
+        return query.order_by(Expense.id).first()
 
     # ------------------------------------------------------------------
     # Reads (confirmed expenses only)
@@ -229,6 +269,13 @@ class ExpenseRepository:
     # ------------------------------------------------------------------
     # Feedback / evaluation reads
     # ------------------------------------------------------------------
+    def receipt_status_counts(self, since: Optional[datetime] = None) -> Dict[str, int]:
+        """{'confirmed': 62, 'discarded': 3, ...} for receipts created on/after `since`."""
+        query = self.session.query(Expense.status, func.count(Expense.id)).filter(Expense.source == "receipt")
+        if since:
+            query = query.filter(Expense.created_at >= since)
+        return {status: int(n) for status, n in query.group_by(Expense.status).all()}
+
     def list_confirmed_for_eval(self, since: Optional[datetime] = None) -> List[Expense]:
         query = self.session.query(Expense).filter(
             Expense.status == ExpenseStatus.CONFIRMED.value, Expense.source == "receipt")

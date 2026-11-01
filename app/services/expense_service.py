@@ -7,7 +7,7 @@ Nothing here calls an LLM. Validation and bookkeeping are plain Python.
 import csv
 import os
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
@@ -23,6 +23,7 @@ from app.schemas.enums import (
 from app.schemas.expense import CategorizationResult, ReceiptExtraction
 from app.services.feedback import compute_corrections, final_snapshot
 from app.config.settings import settings
+from app.utils.clock import utcnow
 from app.utils.logging import logger
 from app.utils.parsing import clean_text, normalize_currency, parse_amount, parse_correction, parse_date_flexible
 from app.utils.tracing import send_feedback
@@ -56,6 +57,7 @@ class ExpenseService:
         categorization: Optional[CategorizationResult],
         meta: Dict[str, Any],
         langsmith_run_id: Optional[str] = None,
+        receipt_hash: Optional[str] = None,
     ) -> Expense:
         category = categorization.category.value if categorization else None
         item = categorization.item if categorization else None
@@ -67,10 +69,19 @@ class ExpenseService:
             "categorization": categorization.model_dump(mode="json") if categorization else None,
         }
         with SessionLocal() as session:
-            return ExpenseRepository(session).create(
+            repo = ExpenseRepository(session)
+            dup = repo.find_duplicate_by_hash(receipt_hash) if receipt_hash else None
+            if dup is not None:  # warn on the card (we never block: the user decides)
+                meta = {**meta, "duplicate_of": {
+                    "id": dup.id, "status": dup.status,
+                    "date": dup.expense_date.isoformat() if dup.expense_date else None,
+                    "amount": float(dup.expense_amount) if dup.expense_amount is not None else None,
+                    "currency": dup.currency}}
+            return repo.create(
                 telegram_user_id=user_id,
                 status=ExpenseStatus.PENDING.value,
                 source="receipt",
+                receipt_hash=receipt_hash,
                 # final values start equal to the AI values ...
                 vendor=extraction.vendor,
                 invoice_number=extraction.invoice_number,
@@ -173,7 +184,9 @@ class ExpenseService:
     # ------------------------------------------------------------------
     def begin_edit(self, user_id: int, expense_id: int, field_name: str) -> None:
         with SessionLocal() as session:
-            ExpenseRepository(session).set_pending_edit(user_id, expense_id, field_name)
+            repo = ExpenseRepository(session)
+            repo.clear_manual(user_id)
+            repo.set_pending_edit(user_id, expense_id, field_name)
 
     def get_edit(self, user_id: int):
         with SessionLocal() as session:
@@ -187,6 +200,69 @@ class ExpenseService:
     def expire_stale(self) -> int:
         with SessionLocal() as session:
             return ExpenseRepository(session).expire_stale_pending(settings.PENDING_EXPENSE_TTL_MINUTES)
+
+    # ------------------------------------------------------------------
+    # Manual entry (/add wizard): amount -> category -> description
+    # ------------------------------------------------------------------
+    def begin_manual(self, user_id: int) -> None:
+        with SessionLocal() as session:
+            repo = ExpenseRepository(session)
+            repo.clear_pending_edit(user_id)      # only one typed answer can be expected at a time
+            repo.start_manual(user_id)
+
+    def get_manual(self, user_id: int):
+        """-> (step, amount, category) or None."""
+        with SessionLocal() as session:
+            row = ExpenseRepository(session).get_manual(user_id, settings.PENDING_EDIT_TTL_MINUTES)
+            return (row.step, float(row.amount) if row.amount is not None else None, row.category) if row else None
+
+    def set_manual_amount(self, user_id: int, amount: float) -> None:
+        with SessionLocal() as session:
+            ExpenseRepository(session).update_manual(user_id, amount=_money(amount), step="category")
+
+    def set_manual_category(self, user_id: int, category: str) -> None:
+        with SessionLocal() as session:
+            ExpenseRepository(session).update_manual(user_id, category=category, step="description")
+
+    def clear_manual(self, user_id: int) -> None:
+        with SessionLocal() as session:
+            ExpenseRepository(session).clear_manual(user_id)
+
+    def finish_manual(self, user_id: int, description: Optional[str]) -> Optional[Expense]:
+        """Create the confirmed expense from the draft and close the wizard."""
+        draft = self.get_manual(user_id)
+        if draft is None or draft[1] is None or not draft[2]:
+            return None
+        expense = self.create_manual_expense(user_id, draft[1], draft[2], description=description)
+        self.clear_manual(user_id)
+        return expense
+
+    def create_manual_expense(
+        self,
+        user_id: int,
+        amount,
+        category: str,
+        expense_date: Optional[date] = None,
+        vendor: Optional[str] = None,
+        description: Optional[str] = None,
+        currency: Optional[str] = None,
+    ) -> Expense:
+        """A manually entered expense is saved directly as CONFIRMED (the human typed it).
+        Unknown category text falls back to Miscellaneous."""
+        normalized = normalize_category(category) or ExpenseCategory.MISCELLANEOUS
+        with SessionLocal() as session:
+            return ExpenseRepository(session).create(
+                telegram_user_id=user_id,
+                status=ExpenseStatus.CONFIRMED.value,
+                source="manual",
+                vendor=vendor or "Manual entry",
+                expense_date=expense_date or date.today(),
+                category=normalized.value,
+                expense_amount=_money(amount),
+                currency=currency or settings.DEFAULT_CURRENCY,
+                description=clean_text(description, 500),
+                confirmed_at=utcnow(),
+            )
 
     # ------------------------------------------------------------------
     # CSV bulk import (rows are the user's own data -> saved as confirmed)
@@ -211,7 +287,7 @@ class ExpenseService:
                     continue
                 category = normalize_category(row.get("category")) or ExpenseCategory.MISCELLANEOUS
                 gos = normalize_goods_or_service(row.get("goods_or_service"))
-                expense = repo.create(
+                repo.create(
                     telegram_user_id=user_id,
                     status=ExpenseStatus.CONFIRMED.value,
                     source="csv",
@@ -224,7 +300,7 @@ class ExpenseService:
                     expense_amount=_money(amount),
                     currency=normalize_currency(row.get("currency")) or settings.DEFAULT_CURRENCY,
                     description=clean_text(row.get("description"), 500),
-                    confirmed_at=datetime.utcnow(),
+                    confirmed_at=utcnow(),
                 )
                 imported += 1
         try:

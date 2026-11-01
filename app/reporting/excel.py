@@ -5,6 +5,8 @@ from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
 from openpyxl import Workbook
+
+from app.utils.clock import utcnow
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
@@ -55,7 +57,7 @@ def build_workbook(expenses: List[Dict[str, Any]], period_label: str, currency: 
         ("Number of expenses", count),
         ("Average expense", round(total / count, 2) if count else 0),
         ("Corrected by a human", sum(1 for e in expenses if e.get("corrected_by_user"))),
-        ("Generated at (UTC)", datetime.utcnow().strftime("%Y-%m-%d %H:%M")),
+        ("Generated at (UTC)", utcnow().strftime("%Y-%m-%d %H:%M")),
         ("Scope", "Confirmed expenses only"),
     ]
     if other_currency_count:

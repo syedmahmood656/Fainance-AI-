@@ -36,3 +36,6 @@ services:
 volumes:
   postgres_data:
   receipts_data:
+
+
+## docker compose up -d db 

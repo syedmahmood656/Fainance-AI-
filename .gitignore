@@ -1,8 +1,26 @@
-.env
+# Byte-compiled / optimized / cached files
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/
+
+# Application specifics
 receipts/
 reports_tmp/
-app.log
-.pytest_cache/
-eval/

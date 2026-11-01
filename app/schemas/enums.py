@@ -6,61 +6,65 @@ from typing import Optional
 
 
 class ExpenseCategory(str, Enum):
-    TRAVEL = "Travel"
-    FOOD_MEALS = "Food & Meals"
-    ACCOMMODATION = "Accommodation"
-    TRANSPORTATION = "Transportation"
-    OFFICE_SUPPLIES = "Office Supplies"
-    UTILITIES = "Utilities"
-    SOFTWARE_SUBSCRIPTIONS = "Software & Subscriptions"
-    EQUIPMENT = "Equipment"
-    MARKETING = "Marketing"
-    COMMUNICATION = "Communication"
-    PROFESSIONAL_SERVICES = "Professional Services"
+    PRINTING_STATIONARY = "Printing and stationary"
+    CONVEYANCE = "conveyance"
+    TRAVELLING_EXPENSES = "travelling expenses"
+    MOBILE_RECHARGE = "mobile recharge"
+    INTERNET = "internet"
+    BOOKS_LIBRARY = "books and library"
+    GUEST_HOSPITALITY = "guest hospitality"
+    SUMMER_ISLAMIC_CAMP = "summer islamic camp"
+    ISLAMIC_VOCATIONAL_CLASSES = "islamic vocational classes"
+    INFAQ = "infaq"
+    ZAKATH = "zakath"
+    ZONAL_SHARE = "zonal share"
     MISCELLANEOUS = "Miscellaneous"
 
 
 # Used in the categorization prompt so the model knows what each bucket means.
 CATEGORY_DESCRIPTIONS = {
-    ExpenseCategory.TRAVEL: "flights, train/bus tickets for trips, travel bookings, visa fees",
-    ExpenseCategory.FOOD_MEALS: "restaurants, team meals, catering, snacks, refreshments",
-    ExpenseCategory.ACCOMMODATION: "hotels, lodging, guest houses, stays",
-    ExpenseCategory.TRANSPORTATION: "local taxi/cab/auto, fuel, parking, tolls, vehicle hire",
-    ExpenseCategory.OFFICE_SUPPLIES: "stationery, printing, paper, consumables, small office goods",
-    ExpenseCategory.UTILITIES: "electricity, water, gas, internet/broadband bills",
-    ExpenseCategory.SOFTWARE_SUBSCRIPTIONS: "software licences, SaaS, cloud, app subscriptions",
-    ExpenseCategory.EQUIPMENT: "laptops, phones, machinery, furniture, durable hardware",
-    ExpenseCategory.MARKETING: "ads, banners, promotion, events, branding material",
-    ExpenseCategory.COMMUNICATION: "mobile recharge, data packs, postage, courier",
-    ExpenseCategory.PROFESSIONAL_SERVICES: "legal, accounting, consulting, freelancers, audits",
+    ExpenseCategory.PRINTING_STATIONARY: "printing, stationery, paper, consumables, office supplies",
+    ExpenseCategory.CONVEYANCE: "local taxi, cab, auto, fuel, tolls, conveyance",
+    ExpenseCategory.TRAVELLING_EXPENSES: "flights, train/bus tickets, travel bookings, visa fees",
+    ExpenseCategory.MOBILE_RECHARGE: "mobile recharge, data packs, phone credit",
+    ExpenseCategory.INTERNET: "internet, broadband bills, wifi",
+    ExpenseCategory.BOOKS_LIBRARY: "books, library subscriptions, educational journals",
+    ExpenseCategory.GUEST_HOSPITALITY: "guest houses, hospitality, refreshments for guests",
+    ExpenseCategory.SUMMER_ISLAMIC_CAMP: "summer islamic camp fees, camp materials",
+    ExpenseCategory.ISLAMIC_VOCATIONAL_CLASSES: "vocational classes, tuition, course fees",
+    ExpenseCategory.INFAQ: "voluntary charity, general infaq",
+    ExpenseCategory.ZAKATH: "obligatory zakath payments",
+    ExpenseCategory.ZONAL_SHARE: "zonal share contributions",
     ExpenseCategory.MISCELLANEOUS: "anything that does not clearly fit the categories above",
 }
 
 ALL_CATEGORIES = list(ExpenseCategory)
 
-# Common alternative spellings a model (or a human) might produce.
+# Common alternative spellings a model (or a human) might produce -> your category.
+# Keys are lower-case; "&" is treated as "and". Add your own words here.
+_C = ExpenseCategory
 _CATEGORY_ALIASES = {
-    "food": ExpenseCategory.FOOD_MEALS,
-    "meals": ExpenseCategory.FOOD_MEALS,
-    "food and meals": ExpenseCategory.FOOD_MEALS,
-    "food & beverage": ExpenseCategory.FOOD_MEALS,
-    "hotel": ExpenseCategory.ACCOMMODATION,
-    "lodging": ExpenseCategory.ACCOMMODATION,
-    "transport": ExpenseCategory.TRANSPORTATION,
-    "conveyance": ExpenseCategory.TRANSPORTATION,
-    "travelling": ExpenseCategory.TRAVEL,
-    "travelling expenses": ExpenseCategory.TRAVEL,
-    "stationery": ExpenseCategory.OFFICE_SUPPLIES,
-    "office": ExpenseCategory.OFFICE_SUPPLIES,
-    "software": ExpenseCategory.SOFTWARE_SUBSCRIPTIONS,
-    "subscriptions": ExpenseCategory.SOFTWARE_SUBSCRIPTIONS,
-    "software and subscriptions": ExpenseCategory.SOFTWARE_SUBSCRIPTIONS,
-    "professional": ExpenseCategory.PROFESSIONAL_SERVICES,
-    "professional services": ExpenseCategory.PROFESSIONAL_SERVICES,
-    "misc": ExpenseCategory.MISCELLANEOUS,
-    "other": ExpenseCategory.MISCELLANEOUS,
-    "others": ExpenseCategory.MISCELLANEOUS,
+    "printing": _C.PRINTING_STATIONARY, "stationary": _C.PRINTING_STATIONARY, "stationery": _C.PRINTING_STATIONARY,
+    "printing and stationery": _C.PRINTING_STATIONARY, "printing and stationary": _C.PRINTING_STATIONARY,
+    "office supplies": _C.PRINTING_STATIONARY, "xerox": _C.PRINTING_STATIONARY,
+    "transport": _C.CONVEYANCE, "transportation": _C.CONVEYANCE, "taxi": _C.CONVEYANCE, "cab": _C.CONVEYANCE,
+    "auto": _C.CONVEYANCE, "fuel": _C.CONVEYANCE,
+    "travel": _C.TRAVELLING_EXPENSES, "travelling": _C.TRAVELLING_EXPENSES, "traveling": _C.TRAVELLING_EXPENSES,
+    "travel expenses": _C.TRAVELLING_EXPENSES, "travelling expense": _C.TRAVELLING_EXPENSES,
+    "recharge": _C.MOBILE_RECHARGE, "mobile": _C.MOBILE_RECHARGE, "phone recharge": _C.MOBILE_RECHARGE,
+    "wifi": _C.INTERNET, "broadband": _C.INTERNET, "internet bill": _C.INTERNET,
+    "books": _C.BOOKS_LIBRARY, "library": _C.BOOKS_LIBRARY, "book": _C.BOOKS_LIBRARY,
+    "books and libraries": _C.BOOKS_LIBRARY,
+    "hospitality": _C.GUEST_HOSPITALITY, "guest": _C.GUEST_HOSPITALITY, "guests": _C.GUEST_HOSPITALITY,
+    "camp": _C.SUMMER_ISLAMIC_CAMP, "summer camp": _C.SUMMER_ISLAMIC_CAMP, "islamic camp": _C.SUMMER_ISLAMIC_CAMP,
+    "vocational": _C.ISLAMIC_VOCATIONAL_CLASSES, "vocational classes": _C.ISLAMIC_VOCATIONAL_CLASSES,
+    "vocational class": _C.ISLAMIC_VOCATIONAL_CLASSES,
+    "infak": _C.INFAQ,
+    "zakat": _C.ZAKATH, "zakaat": _C.ZAKATH, "zakah": _C.ZAKATH,
+    "zonal": _C.ZONAL_SHARE, "zone share": _C.ZONAL_SHARE,
+    "misc": _C.MISCELLANEOUS, "other": _C.MISCELLANEOUS, "others": _C.MISCELLANEOUS,
 }
+del _C
 
 
 def normalize_category(value) -> Optional[ExpenseCategory]:

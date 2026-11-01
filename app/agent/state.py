@@ -8,11 +8,14 @@ class AgentState(TypedDict, total=False):
 
     # ---- input (set by the Telegram layer) ----
     user_id: int
-    input_type: str                    # receipt | csv | feedback | text
+    input_type: str                    # receipt | csv | feedback | text | manual_add
     message_text: Optional[str]
     receipt_ref: Optional[str]         # storage reference of the uploaded receipt image
     csv_file_path: Optional[str]
     feedback: Optional[Dict[str, Any]]  # {"action": "confirm", "expense_id": 7, ...}
+
+    # ---- manual entry (/add) ----
+    manual_event: Optional[Dict[str, Any]]   # {"kind": "start" | "text" | "category" | "cancel", ...}
 
     # ---- receipt workflow ----
     extraction: Any                    # ReceiptExtraction

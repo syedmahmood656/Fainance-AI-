@@ -45,7 +45,7 @@ def test_currency_never_invented():
 
 def test_parse_correction_validates():
     assert parse_correction("expense_amount", "₹12,050") == 12050.0
-    assert parse_correction("category", "food and meals") == "Food & Meals"
+    assert parse_correction("category", "printing & stationary") == ExpenseCategory.PRINTING_STATIONARY.value
     with pytest.raises(ValueError):
         parse_correction("expense_amount", "free")
     with pytest.raises(ValueError):
@@ -53,9 +53,10 @@ def test_parse_correction_validates():
 
 
 def test_category_normalization():
-    assert normalize_category("Travelling Expenses") == ExpenseCategory.TRAVEL
-    assert normalize_category("Conveyance") == ExpenseCategory.TRANSPORTATION
-    assert normalize_category("Zakath") is None
+    assert normalize_category("Travelling Expenses") == ExpenseCategory.TRAVELLING_EXPENSES
+    assert normalize_category("taxi") == ExpenseCategory.CONVEYANCE
+    assert normalize_category("Zakat") == ExpenseCategory.ZAKATH
+    assert normalize_category("Equipment") is None       # not one of your categories -> never guessed
     assert normalize_goods_or_service("services").value == "Service"
 
 
@@ -140,7 +141,7 @@ def test_rule_parser_intents(text, intent):
 
 def test_rule_parser_details():
     r = rule_based_request("Give me an Excel report for Travel expenses in September", TODAY)
-    assert r["category"] == "Travel" and r["period"] == {"kind": "month", "month": 9}
+    assert r["category"] == ExpenseCategory.TRAVELLING_EXPENSES.value and r["period"] == {"kind": "month", "month": 9}
     assert rule_based_request("show the receipt for the ₹6,500 hotel expense", TODAY)["amount"] == 6500.0
     assert rule_based_request("bar graph of this month's expenses by category", TODAY)["chart_type"] == "category_bar"
 
@@ -306,3 +307,151 @@ def test_charts_render_real_png_files():
                                 "October 2026", os.path.join(folder, "line.png"))
     for path in (cat, line):
         assert open(path, "rb").read(8) == b"\x89PNG\r\n\x1a\n" and os.path.getsize(path) > 3000
+
+
+# ---------------- categories: one list drives everything ----------------
+def test_category_list_is_consistent():
+    from app.schemas.enums import ALL_CATEGORIES, CATEGORY_DESCRIPTIONS, _CATEGORY_ALIASES
+    from app.ai.report_rules import _CATEGORY_WORDS
+    values = [c.value for c in ALL_CATEGORIES]
+    assert len(values) == len(set(v.lower() for v in values)), "duplicate category names"
+    assert set(CATEGORY_DESCRIPTIONS) == set(ALL_CATEGORIES), "every category needs a description for the AI prompt"
+    assert all(c in ALL_CATEGORIES for c in _CATEGORY_ALIASES.values())
+    assert all(c in ALL_CATEGORIES for c in _CATEGORY_WORDS.values())
+    for c in ALL_CATEGORIES:                       # every exact name resolves to itself, any casing
+        assert normalize_category(c.value.upper()) == c and normalize_category(c.value) == c
+
+
+def test_rule_parser_understands_your_categories():
+    assert rule_based_request("Show me Zakat expenses this year", TODAY)["category"] == "zakath"
+    assert rule_based_request("show infaq receipts", TODAY)["intent"] == "receipt_lookup"
+    assert rule_based_request("guest hospitality by month", TODAY)["intent"] == "monthly_trend"
+
+
+# ---------------- /add wizard (state machine against an in-memory store) ----------------
+class FakeStore:
+    def __init__(self):
+        self.drafts, self.saved = {}, []
+
+    def begin_manual(self, u): self.drafts[u] = ["amount", None, None]
+    def get_manual(self, u): return tuple(self.drafts[u]) if u in self.drafts else None
+    def set_manual_amount(self, u, a): self.drafts[u][0:2] = ["category", a]
+    def clear_manual(self, u): self.drafts.pop(u, None)
+
+    def set_manual_category(self, u, c):
+        self.drafts[u][0], self.drafts[u][2] = "description", c
+
+    def finish_manual(self, u, description):
+        _step, amount, category = self.drafts.pop(u)
+        e = NS(expense_amount=amount, currency="INR", category=category, expense_date=TODAY, description=description)
+        self.saved.append(e)
+        return e
+
+
+def test_add_wizard_happy_path_with_buttons():
+    from app.agent.manual_flow import handle_manual
+    from app.schemas.enums import ALL_CATEGORIES
+    store = FakeStore()
+    assert "amount" in handle_manual(1, {"kind": "start"}, store)["response_text"]
+    ask = handle_manual(1, {"kind": "text", "text": "₹1,250.50"}, store)
+    assert "₹1,250.50" in ask["response_text"] and sum(len(r) for r in ask["buttons"]) == len(ALL_CATEGORIES)
+    assert ask["buttons"][0][0][1] == "ma:0"
+    nxt = handle_manual(1, {"kind": "category", "value": "2"}, store)
+    assert ALL_CATEGORIES[2].value in nxt["response_text"] and nxt["edit_message"] is True
+    done = handle_manual(1, {"kind": "text", "text": "Auto to the station"}, store)
+    assert "added successfully" in done["response_text"] and "₹1,250.50" in done["response_text"]
+    assert store.saved[0].category == ALL_CATEGORIES[2].value and store.saved[0].description == "Auto to the station"
+    assert store.get_manual(1) is None
+
+
+def test_add_wizard_rejects_bad_input_and_keeps_state():
+    from app.agent.manual_flow import handle_manual
+    store = FakeStore()
+    handle_manual(1, {"kind": "start"}, store)
+    for bad in ("abc", "-5", "0", "99999999999"):
+        assert "positive number" in handle_manual(1, {"kind": "text", "text": bad}, store)["response_text"]
+    assert store.get_manual(1)[0] == "amount"
+    handle_manual(1, {"kind": "text", "text": "100"}, store)
+    assert "don't know that category" in handle_manual(1, {"kind": "text", "text": "banana"}, store)["response_text"]
+    assert handle_manual(1, {"kind": "category", "value": "99"}, store)["toast"] == "Invalid choice."
+    handle_manual(1, {"kind": "text", "text": "zakat"}, store)               # typed category works too
+    assert store.get_manual(1)[0] == "description"
+    done = handle_manual(1, {"kind": "text", "text": "skip"}, store)
+    assert store.saved[0].category == "zakath" and store.saved[0].description is None and "added" in done["response_text"]
+
+
+def test_add_wizard_cancel_stale_and_wrong_step_buttons():
+    from app.agent.manual_flow import handle_manual
+    store = FakeStore()
+    assert "Send /add" in handle_manual(1, {"kind": "text", "text": "hi"}, store)["response_text"]
+    assert handle_manual(1, {"kind": "category", "value": "1"}, store)["toast"].startswith("That entry expired")
+    handle_manual(1, {"kind": "start"}, store)
+    assert handle_manual(1, {"kind": "category", "value": "1"}, store)["toast"] == "That button is no longer active."
+    assert handle_manual(1, {"kind": "text", "text": "cancel"}, store)["response_text"] == "Okay, cancelled."
+    assert store.get_manual(1) is None and not store.saved
+
+
+# ---------------- duplicate receipts ----------------
+def test_duplicate_upload_warning_on_the_card():
+    e = NS(expense_amount=454, expense_date=date(2026, 10, 4), category="x", currency="INR", subtotal=None, tax=None)
+    dup = {"id": 7, "status": "confirmed", "date": "2026-10-04", "amount": 454.0, "currency": "INR"}
+    warning = card_warnings(e, TODAY, {"duplicate_of": dup})[0]
+    assert "already uploaded" in warning and "#7" in warning and "04 Oct 2026" in warning and "₹454" in warning
+    assert card_warnings(e, TODAY, {}) == []
+
+
+# ---------------- evaluation maths ----------------
+def test_wilson_interval_known_values_and_small_samples():
+    from app.services.evaluation import proportion, sample_size_note, wilson_interval
+    p = proportion(44, 62)
+    assert (p["pct"], p["ci_low"], p["ci_high"]) == (71.0, 58.7, 80.8)
+    assert wilson_interval(0, 0) == (0.0, 0.0)
+    assert proportion(0, 5)["ci_high"] > 40                    # 0 of 5 does NOT prove 0%
+    assert "too small" in sample_size_note(10) and "reasonable" in sample_size_note(80)
+
+
+def test_vendor_matching_is_forgiving_but_not_sloppy():
+    from app.services.evaluation import vendor_matches
+    assert vendor_matches("The Lavish Restaurant", "LAVISH RESTAURANT")
+    assert vendor_matches("Sree Chaitanya Institute of Technological Sciences", "Sree Chaitanya Institute")
+    assert not vendor_matches("ABC Cafe", "XYZ Hotel") and not vendor_matches("Amazon", None)
+
+
+def test_receipt_scoring_and_summary():
+    from app.services.evaluation import score_receipt, summarize
+    truth = {"vendor": "Lavish Restaurant", "expense_date": "2026-10-04", "expense_amount": 454, "category": "infaq",
+             "invoice_number": ""}
+    good = {"vendor": "The Lavish Restaurant", "expense_date": "2026-10-04", "expense_amount": 454.0, "category": "infaq"}
+    bad = {**good, "category": "zakath", "expense_amount": 434.0}
+    assert score_receipt(truth, good)["invoice_number"] is None          # blank truth = not scored
+    assert score_receipt(truth, bad)["category"] is False and score_receipt(truth, bad)["expense_amount"] is False
+    summary = summarize([score_receipt(truth, good), score_receipt(truth, bad)])
+    assert summary["n"] == 2 and summary["fully_correct"]["k"] == 1
+    assert summary["per_field"]["vendor"]["pct"] == 100.0 and summary["per_field"]["category"]["pct"] == 50.0
+
+
+def test_live_summary_and_resume_sentence():
+    from app.services.evaluation import live_summary, resume_line
+    records = ([{"corrected_by_user": False, "corrected_fields": []}] * 7
+               + [{"corrected_by_user": True, "corrected_fields": ["expense_amount"]}] * 2
+               + [{"corrected_by_user": True, "corrected_fields": ["category"]}])
+    s = live_summary(records, discarded=2)
+    assert (s["n"], s["accepted"]["k"], s["category"]["k"]) == (10, 7, 9)
+    assert s["accepted_strict"]["n"] == 12 and s["accepted_strict"]["k"] == 7     # discards count as failures
+    line = resume_line(s["n"], s["accepted"], s["category"])
+    assert "10 real receipts" in line and "70.0%" in line and "90.0%" in line and "95% CI" in line
+
+
+def test_clock_is_naive_utc_without_deprecation():
+    import warnings
+    from app.utils.clock import utcnow
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert utcnow().tzinfo is None
+
+def test_no_period_named_means_all_time_not_this_month():
+    for text in ("Expense of every category", "show expenses by category", "how much did we spend", "internet expenses"):
+        assert rule_based_request(text, TODAY)["period"] == {"kind": "all"}, text
+    assert rule_based_request("expenses by category this month", TODAY)["period"] == {"kind": "this_month"}
+    assert rule_based_request("expenses of every category in September", TODAY)["period"]["kind"] == "month"
+    assert rule_based_request("Show me expenses over time", TODAY)["period"]["kind"] == "last_n_months"

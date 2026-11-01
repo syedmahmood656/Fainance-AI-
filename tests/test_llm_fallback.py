@@ -7,9 +7,11 @@ import pytest
 from app.ai import llm_provider
 from app.ai.llm_provider import LLMUnavailableError, llm, reset_cooldowns
 from app.config.settings import settings
+from app.schemas.enums import ALL_CATEGORIES
 from app.schemas.expense import CategorizationResult
 
-GOOD = '{"category": "Food & Meals", "item": "Team Dinner", "goods_or_service": "Service"}'
+CAT = ALL_CATEGORIES[1].value
+GOOD = '{"category": "%s", "item": "Team Dinner", "goods_or_service": "Service"}' % CAT
 
 
 class RateLimit(Exception):
@@ -54,7 +56,7 @@ def test_falls_through_rate_limit_then_bad_json_to_a_working_model(monkeypatch):
         "gemini:gemini-2.5-flash-lite": GOOD,
     })
     result, info = run()
-    assert result.category.value == "Food & Meals"
+    assert result.category.value == CAT
     assert (info.provider, info.model, info.attempts) == ("gemini", "gemini-2.5-flash-lite", 3)
     assert [c[0] for c in calls] == ["openrouter:openrouter/free", "gemini:gemini-2.5-flash",
                                     "gemini:gemini-2.5-flash-lite"]
@@ -99,6 +101,6 @@ def test_image_is_sent_as_image_url_part(monkeypatch):
 
 
 def test_unknown_category_from_model_is_rejected_and_next_model_used(monkeypatch):
-    install(monkeypatch, {"openrouter:openrouter/free": '{"category": "Zakath"}', "gemini:gemini-2.5-flash": GOOD})
+    install(monkeypatch, {"openrouter:openrouter/free": '{"category": "Equipment"}', "gemini:gemini-2.5-flash": GOOD})
     result, info = run()
     assert info.provider == "gemini"

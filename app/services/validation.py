@@ -10,6 +10,7 @@ from datetime import date, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.config.settings import settings
+from app.utils.formatting import format_date, format_money
 
 MAX_REASONABLE_AGE_DAYS = 5 * 365
 
@@ -45,6 +46,13 @@ def card_warnings(expense, today: date, meta: Optional[Dict[str, Any]] = None) -
         warnings.append("I couldn't read this receipt automatically. Tap Correct to fill in the details.")
         if meta.get("failure_reason"):
             warnings.append("Reason: " + str(meta["failure_reason"])[:160])
+
+    dup = meta.get("duplicate_of")
+    if dup:
+        when = format_date(date.fromisoformat(dup["date"])) if dup.get("date") else "unknown date"
+        amount = format_money(dup["amount"], dup.get("currency")) if dup.get("amount") is not None else "unknown amount"
+        warnings.append(f"This exact image was already uploaded (expense #{dup['id']}, {dup.get('status')}, {when}, "
+                        f"{amount}). Tap Correct → Discard if it's the same receipt.")
 
     missing = []
     if expense.expense_amount in (None, 0):

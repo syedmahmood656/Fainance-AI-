@@ -98,3 +98,9 @@ async def telegram_webhook(request: Request):
         return JSONResponse({"status": "ignored"})
     schedule_update(data)
     return JSONResponse({"status": "ok"})
+
+
+if __name__ == "__main__":  # `python -m app.main` (same as: uvicorn app.main:app --port 8000)
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "8000")))

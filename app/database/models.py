@@ -34,13 +34,14 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 from app.config.settings import settings
+from app.utils.clock import utcnow
 from app.utils.logging import logger
 
 Base = declarative_base()
 
 
 def _utcnow() -> datetime:
-    return datetime.utcnow()
+    return utcnow()
 
 
 class Expense(Base):
@@ -66,6 +67,7 @@ class Expense(Base):
     tax = Column(Numeric(14, 2), nullable=True)
     description = Column(String(500), nullable=True)
     receipt_file_reference = Column(String(255), nullable=True)
+    receipt_hash = Column(String(64), nullable=True, index=True)  # sha256 of the uploaded image (duplicate detection)
 
     # ---- AI-extracted values (never overwritten) ----
     vendor_ai = Column(String(255), nullable=True)
@@ -117,6 +119,19 @@ class PendingEdit(Base):
     created_at = Column(DateTime, default=_utcnow)
 
 
+class ManualDraft(Base):
+    """Conversation state for the /add wizard (amount -> category -> description).
+    Kept in the database because each Telegram message is a separate request."""
+
+    __tablename__ = "manual_drafts"
+
+    telegram_user_id = Column(BigInteger, primary_key=True)
+    step = Column(String(16), nullable=False, default="amount")   # amount | category | description
+    amount = Column(Numeric(14, 2), nullable=True)
+    category = Column(String(64), nullable=True)
+    created_at = Column(DateTime, default=_utcnow)
+
+
 def _normalize_db_url(url: str) -> str:
     # Heroku/Supabase style "postgres://" is not understood by SQLAlchemy 2.x
     if url.startswith("postgres://"):
@@ -124,7 +139,26 @@ def _normalize_db_url(url: str) -> str:
     return url
 
 
-engine = create_engine(_normalize_db_url(settings.DATABASE_URL), pool_pre_ping=True)
+def describe_db_url(url: str) -> str:
+    """The database target with the password hidden - safe for logs and error messages."""
+    from sqlalchemy.engine import make_url
+
+    try:
+        return make_url(url).render_as_string(hide_password=True)
+    except Exception:  # noqa: BLE001
+        return "<unparseable DATABASE_URL>"
+
+
+def connect_args_for(url: str) -> dict:
+    """Without a timeout, an unreachable Postgres host blocks for MINUTES (the OS default).
+    libpq understands connect_timeout for both psycopg2 and psycopg 3; SQLite has no network."""
+    if url.startswith("sqlite"):
+        return {}
+    return {"connect_timeout": settings.DB_CONNECT_TIMEOUT_SECONDS}
+
+
+_DB_URL = _normalize_db_url(settings.DATABASE_URL)
+engine = create_engine(_DB_URL, pool_pre_ping=True, connect_args=connect_args_for(_DB_URL))
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, expire_on_commit=False, bind=engine)
 
 
@@ -193,15 +227,23 @@ def ensure_schema() -> None:
                 conn.execute(text(f"ALTER TABLE expenses ALTER COLUMN {name} DROP NOT NULL"))
 
 
-def init_db(retries: int = 30, delay: float = 2.0) -> None:
-    """Wait for the database (it may still be starting in docker-compose), then create/upgrade tables."""
+def init_db(retries: int | None = None, delay: float = 2.0) -> None:
+    """Wait briefly for the database (it may still be starting in docker-compose), then create/upgrade
+    tables. Fails fast with an actionable message instead of hanging."""
+    retries = retries or settings.DB_CONNECT_RETRIES
+    target = describe_db_url(_DB_URL)
+    logger.info("Connecting to database: %s", target)
     for attempt in range(1, retries + 1):
         try:
             ensure_schema()
             return
         except OperationalError as exc:
+            reason = str(exc).splitlines()[0][:140]
             if attempt == retries:
-                raise
-            logger.warning("Database not ready (attempt %d/%d): %s", attempt, retries,
-                           str(exc).splitlines()[0][:120])
+                raise RuntimeError(
+                    f"Cannot reach the database at {target} after {retries} attempts ({reason}).\n"
+                    "  - Docker:  run  docker compose up -d db  and wait until  docker compose ps  says healthy\n"
+                    "  - Check DATABASE_URL in .env (host/port/user/password)\n"
+                    "  - Quick test without Postgres:  DATABASE_URL=sqlite:///./expenses.db") from exc
+            logger.warning("Database not ready (attempt %d/%d): %s", attempt, retries, reason)
             time.sleep(delay)

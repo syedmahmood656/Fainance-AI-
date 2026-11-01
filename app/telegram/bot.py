@@ -160,7 +160,9 @@ async def _handle_message(message: dict) -> None:
 
     if not _is_authorized(user_id):
         logger.warning("Unauthorized access attempt by user %s", user_id)
-        await bot_instance.send_message(chat_id, "❌ You are not authorized to use this bot.")
+        await bot_instance.send_message(
+            chat_id, f"❌ You are not authorized to use this bot.\nYour Telegram ID is {user_id}. "
+                     "Ask the administrator to add it to ALLOWED_TELEGRAM_USER_IDS.")
         return
 
     text = (message.get("text") or "").strip()
@@ -191,6 +193,8 @@ async def _handle_message(message: dict) -> None:
             else:
                 await bot_instance.send_message(chat_id, "❌ I can read receipt images (JPG/PNG) and CSV files.")
                 return
+        elif command == "/add":
+            state = _new_state(user_id, "manual_add", manual_event={"kind": "start"})
         elif command == "/cancel":
             state = _new_state(user_id, "feedback", feedback={"action": "cancel_edit"})
         elif text:
@@ -225,6 +229,10 @@ async def _handle_callback(query: dict) -> None:
         return
 
     parts = (query.get("data") or "").split(":")
+    if parts[0] == "ma" and len(parts) == 2:        # category button of the /add wizard
+        state = _new_state(user_id, "manual_add", manual_event={"kind": "category", "value": parts[1]})
+        await _run_and_deliver(chat_id, state, callback_id=callback_id, message_id=message_id)
+        return
     action = CALLBACK_ACTIONS.get(parts[0])
     try:
         expense_id = int(parts[1])
